@@ -16,50 +16,94 @@
 // @run-at       document-idle
 // ==/UserScript==
 
+// @ts-check
+
 (function () {
   'use strict';
 
-  const LOG_PREFIX = '[BYP]';
+  // ---------- Config ----------
+  // Everything tied to Yahoo's page (selectors, wording) lives here: update it first if Yahoo changes its markup.
+  const CONFIG = {
+    LOG_PREFIX: '[BYP]',
+    COLORS: { win: '#2e9e4f', lose: '#d9534f' },
+    SELECTORS: {
+      favHeader: 'th.favorite',
+      infoLink: 'td.info a',
+      favCell: 'td.favorite',
+      undCell: 'td.underdog',
+      module: '.ysf-matchup-dist'
+    },
+    // Applied to a module's flattened text
+    REGEX: {
+      favName: /Favorite\s*@?\s*(.+?)\s*Favorite\s*Pick\s*Percentage/,
+      undName: /Underdog\s*(.+?)\s*Underdog\s*Pick\s*Percentage/,
+      favPct: /Favorite\s*Pick\s*Percentage\s*(\d+)%/,
+      undPct: /Underdog\s*Pick\s*Percentage\s*(\d+)%/,
+      records: /(\d+-\d+\s*\(\d+-\d+\))\s*Record\s*(\d+-\d+\s*\(\d+-\d+\))/,
+      pts: /([\d.]+)\s*pts/
+    }
+  };
 
-  let PAGE = null; // promise: list of matchup modules (single request)
+  /**
+   * @typedef {Object} MatchupInfo
+   * @property {string} fav      normalized favorite name
+   * @property {string} und      normalized underdog name
+   * @property {string} raw      normalized full module text
+   * @property {number} favPct   favorite pick percentage
+   * @property {number} undPct   underdog pick percentage
+   * @property {string} favRec   favorite record, e.g. "5-1 (3-0)"
+   * @property {string} undRec   underdog record
+   * @property {string|null} pts spread in favor of the favorite
+   */
+
+  /** @type {Promise<MatchupInfo[]> | null} picks page, fetched once */
+  let picksPromise = null;
 
   // ---------- Styles ----------
-  const css = `
-    .byp-box { clear: both; margin-top: 4px; font-size: 11px; line-height: 1.3; font-weight: normal; white-space: nowrap; }
-    .byp-fav-box { text-align: right; }
-    .byp-und-box { text-align: left; }
-    .byp-line { display: flex; align-items: center; gap: 3px; }
-    .byp-fav-box .byp-line { justify-content: flex-end; }   /* % on the left, bar on the right */
-    .byp-und-box .byp-line { justify-content: flex-start; } /* bar on the left, % on the right */
-    .byp-pct { font-weight: 700; }
-    .byp-fav-box .byp-pct { text-align: left; }
-    .byp-und-box .byp-pct { text-align: right; }
-    .byp-bar { position: relative; flex: 0 0 110px; height: 8px; background: #e3e3e3; border-radius: 4px; overflow: hidden; }
-    .byp-bar > span { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
-    .byp-fav-box .byp-bar > span { right: 0; } /* fills from the right */
-    .byp-und-box .byp-bar > span { left: 0; }  /* fills from the left */
-    .byp-rec { color: #555; margin-top: 2px; }
-    .byp-fav { color: #1a7f37; font-weight: 700; margin-left: 4px; }
-  `;
-  const style = document.createElement('style');
-  style.textContent = css;
-  document.head.appendChild(style);
+  function injectStyles() {
+    const style = document.createElement('style');
+    style.textContent = `
+      .byp-box { clear: both; margin-top: 4px; font-size: 11px; line-height: 1.3; font-weight: normal; white-space: nowrap; }
+      .byp-fav-box { text-align: right; }
+      .byp-und-box { text-align: left; }
+      .byp-line { display: flex; align-items: center; gap: 3px; }
+      .byp-fav-box .byp-line { justify-content: flex-end; }   /* % on the left, bar on the right */
+      .byp-und-box .byp-line { justify-content: flex-start; } /* bar on the left, % on the right */
+      .byp-pct { font-weight: 700; }
+      .byp-fav-box .byp-pct { text-align: left; }
+      .byp-und-box .byp-pct { text-align: right; }
+      .byp-bar { position: relative; flex: 0 0 110px; height: 8px; background: #e3e3e3; border-radius: 4px; overflow: hidden; }
+      .byp-bar > span { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+      .byp-fav-box .byp-bar > span { right: 0; } /* fills from the right */
+      .byp-und-box .byp-bar > span { left: 0; }  /* fills from the left */
+      .byp-rec { color: #555; margin-top: 2px; }
+      .byp-fav { color: #1a7f37; font-weight: 700; margin-left: 4px; }
+    `;
+    document.head.appendChild(style);
+  }
 
-  // ---------- Name normalization ----------
-  const norm = s => (s || '').toLowerCase()
+  // ---------- Utils ----------
+  /** Lowercase and strip rankings, punctuation and "@" so names compare reliably. */
+  const norm = (/** @type {string | null | undefined} */ s) => (s || '').toLowerCase()
     .replace(/\(\d+\)/g, ' ')          // ranking, e.g. "(25)"
     .replace(/[^a-z0-9]+/g, ' ')       // punctuation, "@", etc.
     .trim();
 
-  // ---------- Parse one matchup module ----------
+  // ---------- Parsing ----------
+  /**
+   * Extract a matchup's data from its module element.
+   * @param {Element} m
+   * @returns {MatchupInfo | null} null if the expected text is missing
+   */
   function parseModule(m) {
+    const { REGEX } = CONFIG;
     const txt = (m.textContent || '').replace(/\s+/g, ' ');
-    const favName = (/Favorite\s*@?\s*(.+?)\s*Favorite\s*Pick\s*Percentage/.exec(txt) || [])[1];
-    const undName = (/Underdog\s*(.+?)\s*Underdog\s*Pick\s*Percentage/.exec(txt) || [])[1];
-    const favPct  = /Favorite\s*Pick\s*Percentage\s*(\d+)%/.exec(txt);
-    const undPct  = /Underdog\s*Pick\s*Percentage\s*(\d+)%/.exec(txt);
-    const recs    = /(\d+-\d+\s*\(\d+-\d+\))\s*Record\s*(\d+-\d+\s*\(\d+-\d+\))/.exec(txt);
-    const pts     = /([\d.]+)\s*pts/.exec(txt);
+    const favName = (REGEX.favName.exec(txt) || [])[1];
+    const undName = (REGEX.undName.exec(txt) || [])[1];
+    const favPct = REGEX.favPct.exec(txt);
+    const undPct = REGEX.undPct.exec(txt);
+    const recs = REGEX.records.exec(txt);
+    const pts = REGEX.pts.exec(txt);
     if (!favPct || !undPct || !recs) return null;
     return {
       fav: norm(favName),
@@ -73,22 +117,33 @@
     };
   }
 
-  // ---------- Load the picks page once ----------
-  // The pick distribution section holds the blocks for ALL games (one per game, in order).
+  // ---------- Loading ----------
+  /**
+   * Fetch the picks page once; it holds a module for ALL games (one per game, in order).
+   * @param {string} url
+   * @returns {Promise<MatchupInfo[]>}
+   */
   function loadModules(url) {
-    if (!PAGE) {
-      PAGE = fetch(url, { credentials: 'same-origin' })
+    if (!picksPromise) {
+      picksPromise = fetch(url, { credentials: 'same-origin' })
         .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
         .then(html => {
           const doc = new DOMParser().parseFromString(html, 'text/html');
-          return [...doc.querySelectorAll('.ysf-matchup-dist')].map(parseModule).filter(Boolean);
+          return [...doc.querySelectorAll(CONFIG.SELECTORS.module)].map(parseModule).filter(m => m !== null);
         })
-        .catch(err => { console.warn(LOG_PREFIX, 'failed to load picks page', err); return []; });
+        .catch(err => { console.warn(CONFIG.LOG_PREFIX, 'failed to load picks page', err); return []; });
     }
-    return PAGE;
+    return picksPromise;
   }
 
-  // ---------- Match a form row to its module ----------
+  // ---------- Matching ----------
+  /**
+   * Find the module of a form row from its two team cells.
+   * @param {MatchupInfo[]} modules
+   * @param {Element} favCell
+   * @param {Element} undCell
+   * @returns {MatchupInfo | null}
+   */
   function findInfo(modules, favCell, undCell) {
     const f = norm(favCell.textContent);
     const u = norm(undCell.textContent);
@@ -97,10 +152,15 @@
         || null;
   }
 
-  // ---------- Build the block shown under a team name ----------
+  // ---------- Rendering ----------
+  /**
+   * Append the distribution bar, record and spread under a team name.
+   * @param {Element} cell
+   * @param {{pct: number, rec: string, isFav: boolean, pts: string | null, winning: boolean}} data
+   */
   function addBlock(cell, { pct, rec, isFav, pts, winning }) {
     const box = document.createElement('div');
-    const color = winning ? '#2e9e4f' : '#d9534f';
+    const color = winning ? CONFIG.COLORS.win : CONFIG.COLORS.lose;
     const bar = `<div class="byp-bar"><span style="width:${pct}%;background:${color}"></span></div>`;
     const pctEl = `<span class="byp-pct">${pct}%</span>`;
 
@@ -113,15 +173,19 @@
     cell.appendChild(box);
   }
 
+  /**
+   * @param {HTMLTableRowElement} row
+   * @param {MatchupInfo | null} info
+   */
   function render(row, info) {
     if (row.dataset.byp) return;
-    const favCell = row.querySelector('td.favorite');
-    const undCell = row.querySelector('td.underdog');
+    const favCell = row.querySelector(CONFIG.SELECTORS.favCell);
+    const undCell = row.querySelector(CONFIG.SELECTORS.undCell);
     if (!favCell || !undCell) return;
     row.dataset.byp = '1';
 
     if (!info) {
-      console.warn(LOG_PREFIX, 'no module found for', favCell.textContent.trim(), '-', undCell.textContent.trim());
+      console.warn(CONFIG.LOG_PREFIX, 'no module found for', favCell.textContent?.trim(), '-', undCell.textContent?.trim());
       return;
     }
     const favWins = info.favPct >= info.undPct;
@@ -129,22 +193,31 @@
     addBlock(undCell, { pct: info.undPct, rec: info.undRec, isFav: false, pts: null,     winning: !favWins });
   }
 
-  // ---------- Picks table ----------
-  function processTable() {
+  // ---------- Orchestration ----------
+  /** Find the picks table (once) and decorate each of its game rows. */
+  function enhancePickTable() {
+    const { SELECTORS } = CONFIG;
     const table = [...document.querySelectorAll('table')]
-      .find(t => t.querySelector('th.favorite') && t.querySelector('td.info a'));
+      .find(t => t.querySelector(SELECTORS.favHeader) && t.querySelector(SELECTORS.infoLink));
     if (!table || table.dataset.byp) return;
     table.dataset.byp = '1';
 
-    const firstLink = table.querySelector('td.info a');
+    const firstLink = /** @type {HTMLAnchorElement} */ (table.querySelector(SELECTORS.infoLink));
     loadModules(firstLink.href).then(modules => {
       [...table.rows].forEach(row => {
-        if (!row.querySelector('td.info a')) return;
-        render(row, findInfo(modules, row.querySelector('td.favorite'), row.querySelector('td.underdog')));
+        const favCell = row.querySelector(SELECTORS.favCell);
+        const undCell = row.querySelector(SELECTORS.undCell);
+        if (!row.querySelector(SELECTORS.infoLink) || !favCell || !undCell) return;
+        render(row, findInfo(modules, favCell, undCell));
       });
     });
   }
 
-  processTable();
-  new MutationObserver(processTable).observe(document.body, { childList: true, subtree: true });
+  function init() {
+    injectStyles();
+    enhancePickTable();
+    new MutationObserver(enhancePickTable).observe(document.body, { childList: true, subtree: true });
+  }
+
+  init();
 })();
