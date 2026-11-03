@@ -22,33 +22,34 @@
   'use strict';
 
   // ---------- Config ----------
-  // Everything tied to Yahoo's page (selectors, wording) lives here: update it first if Yahoo changes its markup.
+  // Everything tied to Yahoo's page (selectors, labels) lives here: update it first if Yahoo changes its markup.
   const CONFIG = {
     LOG_PREFIX: '[BYP]',
     COLORS: { win: '#2e9e4f', lose: '#d9534f' },
     SELECTORS: {
+      // Pick form
       favHeader: 'th.favorite',
       infoLink: 'td.info a',
       favCell: 'td.favorite',
       undCell: 'td.underdog',
-      module: '.ysf-matchup-dist'
+      teamLink: 'a',
+      // Pick distribution module (one per game)
+      module: '.ysf-matchup-dist',
+      modFavLink: 'dl.favorite dd.team a',
+      modUndLink: 'dl.underdog dd.team a',
+      modFavPct: 'dl.favorite dd.percent',
+      modUndPct: 'dl.underdog dd.percent',
+      modStatRow: '.ft tbody tr',
+      modStatLabel: 'td.label'
     },
-    // Applied to a module's flattened text
-    REGEX: {
-      favName: /Favorite\s*@?\s*(.+?)\s*Favorite\s*Pick\s*Percentage/,
-      undName: /Underdog\s*(.+?)\s*Underdog\s*Pick\s*Percentage/,
-      favPct: /Favorite\s*Pick\s*Percentage\s*(\d+)%/,
-      undPct: /Underdog\s*Pick\s*Percentage\s*(\d+)%/,
-      records: /(\d+-\d+\s*\(\d+-\d+\))\s*Record\s*(\d+-\d+\s*\(\d+-\d+\))/,
-      pts: /([\d.]+)\s*pts/
-    }
+    // Labels of the module's stat rows: [favorite value, label, underdog value]
+    LABELS: { record: 'Record', spread: 'Favorite' }
   };
 
   /**
    * @typedef {Object} MatchupInfo
-   * @property {string} fav      normalized favorite name
-   * @property {string} und      normalized underdog name
-   * @property {string} raw      normalized full module text
+   * @property {string} favKey   favorite team page URL (see teamKey)
+   * @property {string} undKey   underdog team page URL
    * @property {number} favPct   favorite pick percentage
    * @property {number} undPct   underdog pick percentage
    * @property {string} favRec   favorite record, e.g. "5-1 (3-0)"
@@ -83,43 +84,55 @@
   }
 
   // ---------- Utils ----------
-  /** Lowercase and strip rankings, punctuation and "@" so names compare reliably. */
-  const norm = (/** @type {string | null | undefined} */ s) => (s || '').toLowerCase()
-    .replace(/\(\d+\)/g, ' ')          // ranking, e.g. "(25)"
-    .replace(/[^a-z0-9]+/g, ' ')       // punctuation, "@", etc.
-    .trim();
+  /**
+   * Team identifier: its team page URL, the same in the form and in the pick distribution page.
+   * Unlike the displayed name, it ignores rankings, "@" and similar names (Texas / Texas Tech).
+   * @param {Element | null} link
+   */
+  const teamKey = link => (link?.getAttribute('href') || '').replace(/\/$/, '');
 
   // ---------- Parsing ----------
   /**
+   * Cell texts of the module's stat row with the given label.
+   * @param {Element} m
+   * @param {string} label
+   * @returns {string[] | null}
+   */
+  function statCells(m, label) {
+    const { modStatRow, modStatLabel } = CONFIG.SELECTORS;
+    const row = [...m.querySelectorAll(modStatRow)]
+      .find(r => r.querySelector(modStatLabel)?.textContent?.trim() === label);
+    return row ? [...row.children].map(c => c.textContent?.trim() ?? '') : null;
+  }
+
+  /**
    * Extract a matchup's data from its module element.
    * @param {Element} m
-   * @returns {MatchupInfo | null} null if the expected text is missing
+   * @returns {MatchupInfo | null} null if the expected elements are missing
    */
   function parseModule(m) {
-    const { REGEX } = CONFIG;
-    const txt = (m.textContent || '').replace(/\s+/g, ' ');
-    const favName = (REGEX.favName.exec(txt) || [])[1];
-    const undName = (REGEX.undName.exec(txt) || [])[1];
-    const favPct = REGEX.favPct.exec(txt);
-    const undPct = REGEX.undPct.exec(txt);
-    const recs = REGEX.records.exec(txt);
-    const pts = REGEX.pts.exec(txt);
-    if (!favPct || !undPct || !recs) return null;
+    const { SELECTORS, LABELS } = CONFIG;
+    const favKey = teamKey(m.querySelector(SELECTORS.modFavLink));
+    const undKey = teamKey(m.querySelector(SELECTORS.modUndLink));
+    const favPct = Number.parseInt(m.querySelector(SELECTORS.modFavPct)?.textContent ?? '', 10);
+    const undPct = Number.parseInt(m.querySelector(SELECTORS.modUndPct)?.textContent ?? '', 10);
+    const record = statCells(m, LABELS.record);
+    const spread = statCells(m, LABELS.spread);
+    if (!favKey || !undKey || Number.isNaN(favPct) || Number.isNaN(undPct) || !record) return null;
     return {
-      fav: norm(favName),
-      und: norm(undName),
-      raw: norm(txt),
-      favPct: +favPct[1],
-      undPct: +undPct[1],
-      favRec: recs[1].replace(/\s+/g, ' '),
-      undRec: recs[2].replace(/\s+/g, ' '),
-      pts: pts ? pts[1] : null
+      favKey,
+      undKey,
+      favPct,
+      undPct,
+      favRec: record[0],
+      undRec: record[2],
+      pts: /[\d.]+/.exec(spread?.[0] ?? '')?.[0] ?? null
     };
   }
 
   // ---------- Loading ----------
   /**
-   * Fetch the picks page once; it holds a module for ALL games (one per game, in order).
+   * Fetch the picks page once; it holds a module for ALL games.
    * @param {string} url
    * @returns {Promise<MatchupInfo[]>}
    */
@@ -132,7 +145,9 @@
         })
         .then(html => {
           const doc = new DOMParser().parseFromString(html, 'text/html');
-          return [...doc.querySelectorAll(CONFIG.SELECTORS.module)].map(parseModule).filter(m => m !== null);
+          const modules = [...doc.querySelectorAll(CONFIG.SELECTORS.module)].map(parseModule).filter(m => m !== null);
+          if (!modules.length) console.warn(CONFIG.LOG_PREFIX, 'no usable pick distribution found; Yahoo markup may have changed');
+          return modules;
         })
         .catch(err => { console.warn(CONFIG.LOG_PREFIX, 'failed to load picks page', err); return []; });
     }
@@ -148,11 +163,9 @@
    * @returns {MatchupInfo | null}
    */
   function findInfo(modules, favCell, undCell) {
-    const f = norm(favCell.textContent);
-    const u = norm(undCell.textContent);
-    return modules.find(m => m.fav === f && m.und === u)
-        || modules.find(m => m.raw.includes(f) && m.raw.includes(u))
-        || null;
+    const f = teamKey(favCell.querySelector(CONFIG.SELECTORS.teamLink));
+    const u = teamKey(undCell.querySelector(CONFIG.SELECTORS.teamLink));
+    return modules.find(m => m.favKey === f && m.undKey === u) || null;
   }
 
   // ---------- Rendering ----------
