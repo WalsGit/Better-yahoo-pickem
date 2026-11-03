@@ -25,7 +25,6 @@
   // Everything tied to Yahoo's page (selectors, labels) lives here: update it first if Yahoo changes its markup.
   const CONFIG = {
     LOG_PREFIX: '[BYP]',
-    COLORS: { win: '#2e9e4f', lose: '#d9534f' },
     SELECTORS: {
       // Pick form (absent on past weeks and on weeks whose games are not set yet)
       form: 'form[name="ysf-picks-form"]',
@@ -71,12 +70,15 @@
       .byp-pct { font-weight: 700; }
       .byp-fav-box .byp-pct { text-align: left; }
       .byp-und-box .byp-pct { text-align: right; }
-      .byp-bar { position: relative; flex: 0 0 110px; height: 8px; background: #e3e3e3; border-radius: 4px; overflow: hidden; }
+      .byp-bar { position: relative; flex: 0 0 110px; height: 8px; background: rgba(128, 128, 128, 0.25); border-radius: 4px; overflow: hidden; }
       .byp-bar > span { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
       .byp-fav-box .byp-bar > span { right: 0; } /* fills from the right */
       .byp-und-box .byp-bar > span { left: 0; }  /* fills from the left */
-      .byp-rec { color: #555; margin-top: 2px; }
-      .byp-fav { color: #1a7f37; font-weight: 700; margin-left: 4px; }
+      .byp-win { background: #2e9e4f; }
+      .byp-lose { background: #d9534f; }
+      /* Inherit the page's text color so it works in light and dark themes */
+      .byp-rec { margin-top: 2px; opacity: 0.75; }
+      .byp-fav { margin-left: 4px; font-size: 10px; opacity: 0.8; }
     `;
     document.head.appendChild(style);
   }
@@ -182,10 +184,10 @@
    * @param {{pct: number, rec: string, isFav: boolean, pts: string | null, winning: boolean}} data
    */
   function addBlock(cell, { pct, rec, isFav, pts, winning }) {
-    const fill = el('span');
+    const fill = el('span', winning ? 'byp-win' : 'byp-lose');
     fill.style.width = pct + '%';
-    fill.style.background = winning ? CONFIG.COLORS.win : CONFIG.COLORS.lose;
     const bar = el('div', 'byp-bar');
+    bar.setAttribute('aria-hidden', 'true'); // decorative: the percentage is shown as text
     bar.append(fill);
     const pctEl = el('span', 'byp-pct', pct + '%');
 
@@ -195,7 +197,7 @@
     line.append(...(isFav ? [pctEl, bar] : [bar, pctEl]));
 
     const recEl = el('div', 'byp-rec', rec);
-    if (isFav && pts) recEl.append(el('span', 'byp-fav', pts + 'pts FAV'));
+    if (isFav && pts) recEl.append(el('span', 'byp-fav', pts + ' pts FAV'));
 
     const box = el('div', 'byp-box ' + (isFav ? 'byp-fav-box' : 'byp-und-box'));
     box.append(line, recEl);
