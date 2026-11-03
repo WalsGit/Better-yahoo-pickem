@@ -26,8 +26,8 @@ Under each team, for every game of the form:
 
 You can also install it from one of these sources:
 
-- Greasy Fork: *link to be added*
-- OpenUserJS: *link to be added*
+- **Greasy Fork**: [https://greasyfork.org/en/scripts/603634-better-yahoo-pick-em-form](https://greasyfork.org/en/scripts/603634-better-yahoo-pick-em-form)
+- **OpenUserJS**: [https://openuserjs.org/scripts/Walsgit/Better_Yahoo_Pickem_Form](https://openuserjs.org/scripts/Walsgit/Better_Yahoo_Pickem_Form)
 
 ## Supported pages
 
