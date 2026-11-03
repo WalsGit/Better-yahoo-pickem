@@ -157,22 +157,41 @@
 
   // ---------- Rendering ----------
   /**
+   * Create an element with an optional class and text content.
+   * @param {string} tag
+   * @param {string} [className]
+   * @param {string} [text]
+   */
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  /**
    * Append the distribution bar, record and spread under a team name.
    * @param {Element} cell
    * @param {{pct: number, rec: string, isFav: boolean, pts: string | null, winning: boolean}} data
    */
   function addBlock(cell, { pct, rec, isFav, pts, winning }) {
-    const box = document.createElement('div');
-    const color = winning ? CONFIG.COLORS.win : CONFIG.COLORS.lose;
-    const bar = `<div class="byp-bar"><span style="width:${pct}%;background:${color}"></span></div>`;
-    const pctEl = `<span class="byp-pct">${pct}%</span>`;
+    const fill = el('span');
+    fill.style.width = pct + '%';
+    fill.style.background = winning ? CONFIG.COLORS.win : CONFIG.COLORS.lose;
+    const bar = el('div', 'byp-bar');
+    bar.append(fill);
+    const pctEl = el('span', 'byp-pct', pct + '%');
 
-    box.className = 'byp-box ' + (isFav ? 'byp-fav-box' : 'byp-und-box');
     // Favorite: % on the left, bar on the right (fills from the right)
     // Underdog: bar on the left (fills from the left), % on the right
-    box.innerHTML = `
-      <div class="byp-line">${isFav ? pctEl + bar : bar + pctEl}</div>
-      <div class="byp-rec">${rec}${isFav && pts ? `<span class="byp-fav">${pts}pts FAV</span>` : ''}</div>`;
+    const line = el('div', 'byp-line');
+    line.append(...(isFav ? [pctEl, bar] : [bar, pctEl]));
+
+    const recEl = el('div', 'byp-rec', rec);
+    if (isFav && pts) recEl.append(el('span', 'byp-fav', pts + 'pts FAV'));
+
+    const box = el('div', 'byp-box ' + (isFav ? 'byp-fav-box' : 'byp-und-box'));
+    box.append(line, recEl);
     cell.appendChild(box);
   }
 
