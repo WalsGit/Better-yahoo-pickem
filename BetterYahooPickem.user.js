@@ -9,8 +9,8 @@
 // @supportURL   https://github.com/WalsGit/Better-yahoo-pickem/issues
 // @downloadURL  https://raw.githubusercontent.com/WalsGit/Better-yahoo-pickem/main/BetterYahooPickem.user.js
 // @updateURL    https://raw.githubusercontent.com/WalsGit/Better-yahoo-pickem/main/BetterYahooPickem.user.js
-// @match        https://football.fantasysports.yahoo.com/college/*
-// @match        https://football.fantasysports.yahoo.com/pickem/*
+// @match        https://football.fantasysports.yahoo.com/college/*/*
+// @match        https://football.fantasysports.yahoo.com/pickem/*/*
 // @noframes
 // @grant        none
 // @run-at       document-idle
@@ -27,8 +27,9 @@
     LOG_PREFIX: '[BYP]',
     COLORS: { win: '#2e9e4f', lose: '#d9534f' },
     SELECTORS: {
-      // Pick form
-      favHeader: 'th.favorite',
+      // Pick form (absent on past weeks and on weeks whose games are not set yet)
+      form: 'form[name="ysf-picks-form"]',
+      row: 'tr',
       infoLink: 'td.info a',
       favCell: 'td.favorite',
       undCell: 'td.underdog',
@@ -56,9 +57,6 @@
    * @property {string} undRec   underdog record
    * @property {string|null} pts spread in favor of the favorite
    */
-
-  /** @type {Promise<MatchupInfo[]> | null} picks page, fetched once */
-  let picksPromise = null;
 
   // ---------- Styles ----------
   function injectStyles() {
@@ -132,26 +130,22 @@
 
   // ---------- Loading ----------
   /**
-   * Fetch the picks page once; it holds a module for ALL games.
+   * Fetch the picks page; it holds a module for ALL games. Failures are logged and give no modules.
    * @param {string} url
    * @returns {Promise<MatchupInfo[]>}
    */
-  function loadModules(url) {
-    if (!picksPromise) {
-      picksPromise = fetch(url, { credentials: 'same-origin' })
-        .then(r => {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.text();
-        })
-        .then(html => {
-          const doc = new DOMParser().parseFromString(html, 'text/html');
-          const modules = [...doc.querySelectorAll(CONFIG.SELECTORS.module)].map(parseModule).filter(m => m !== null);
-          if (!modules.length) console.warn(CONFIG.LOG_PREFIX, 'no usable pick distribution found; Yahoo markup may have changed');
-          return modules;
-        })
-        .catch(err => { console.warn(CONFIG.LOG_PREFIX, 'failed to load picks page', err); return []; });
+  async function loadModules(url) {
+    try {
+      const r = await fetch(url, { credentials: 'same-origin' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
+      const modules = [...doc.querySelectorAll(CONFIG.SELECTORS.module)].map(parseModule).filter(m => m !== null);
+      if (!modules.length) console.warn(CONFIG.LOG_PREFIX, 'no usable pick distribution found; Yahoo markup may have changed');
+      return modules;
+    } catch (err) {
+      console.warn(CONFIG.LOG_PREFIX, 'failed to load picks page', err);
+      return [];
     }
-    return picksPromise;
   }
 
   // ---------- Matching ----------
@@ -209,16 +203,12 @@
   }
 
   /**
-   * @param {HTMLTableRowElement} row
+   * Decorate both team cells of a game row.
+   * @param {Element} favCell
+   * @param {Element} undCell
    * @param {MatchupInfo | null} info
    */
-  function render(row, info) {
-    if (row.dataset.byp) return;
-    const favCell = row.querySelector(CONFIG.SELECTORS.favCell);
-    const undCell = row.querySelector(CONFIG.SELECTORS.undCell);
-    if (!favCell || !undCell) return;
-    row.dataset.byp = '1';
-
+  function render(favCell, undCell, info) {
     if (!info) {
       console.warn(CONFIG.LOG_PREFIX, 'no module found for', favCell.textContent?.trim(), '-', undCell.textContent?.trim());
       return;
@@ -229,30 +219,21 @@
   }
 
   // ---------- Orchestration ----------
-  /** Find the picks table (once) and decorate each of its game rows. */
-  function enhancePickTable() {
+  /** Decorate every game row of the pick form; do nothing on pages without one. */
+  async function init() {
     const { SELECTORS } = CONFIG;
-    const table = [...document.querySelectorAll('table')]
-      .find(t => t.querySelector(SELECTORS.favHeader) && t.querySelector(SELECTORS.infoLink));
-    if (!table || table.dataset.byp) return;
-    table.dataset.byp = '1';
+    const form = document.querySelector(SELECTORS.form);
+    const firstLink = /** @type {HTMLAnchorElement | null} */ (form?.querySelector(SELECTORS.infoLink));
+    if (!form || !firstLink) return;
 
-    const firstLink = /** @type {HTMLAnchorElement} */ (table.querySelector(SELECTORS.infoLink));
-    void loadModules(firstLink.href).then(modules => {
-      [...table.rows].forEach(row => {
-        const favCell = row.querySelector(SELECTORS.favCell);
-        const undCell = row.querySelector(SELECTORS.undCell);
-        if (!row.querySelector(SELECTORS.infoLink) || !favCell || !undCell) return;
-        render(row, findInfo(modules, favCell, undCell));
-      });
-    }).catch(err => console.warn(CONFIG.LOG_PREFIX, 'failed to render picks', err));
-  }
-
-  function init() {
     injectStyles();
-    enhancePickTable();
-    new MutationObserver(enhancePickTable).observe(document.body, { childList: true, subtree: true });
+    const modules = await loadModules(firstLink.href);
+    for (const row of form.querySelectorAll(SELECTORS.row)) {
+      const favCell = row.querySelector(SELECTORS.favCell);
+      const undCell = row.querySelector(SELECTORS.undCell);
+      if (favCell && undCell) render(favCell, undCell, findInfo(modules, favCell, undCell));
+    }
   }
 
-  init();
+  init().catch(err => console.warn(CONFIG.LOG_PREFIX, 'unexpected error', err));
 })();
