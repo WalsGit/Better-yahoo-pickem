@@ -126,7 +126,10 @@
   function loadModules(url) {
     if (!picksPromise) {
       picksPromise = fetch(url, { credentials: 'same-origin' })
-        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+        .then(r => {
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          return r.text();
+        })
         .then(html => {
           const doc = new DOMParser().parseFromString(html, 'text/html');
           return [...doc.querySelectorAll(CONFIG.SELECTORS.module)].map(parseModule).filter(m => m !== null);
@@ -203,14 +206,14 @@
     table.dataset.byp = '1';
 
     const firstLink = /** @type {HTMLAnchorElement} */ (table.querySelector(SELECTORS.infoLink));
-    loadModules(firstLink.href).then(modules => {
+    void loadModules(firstLink.href).then(modules => {
       [...table.rows].forEach(row => {
         const favCell = row.querySelector(SELECTORS.favCell);
         const undCell = row.querySelector(SELECTORS.undCell);
         if (!row.querySelector(SELECTORS.infoLink) || !favCell || !undCell) return;
         render(row, findInfo(modules, favCell, undCell));
       });
-    });
+    }).catch(err => console.warn(CONFIG.LOG_PREFIX, 'failed to render picks', err));
   }
 
   function init() {
